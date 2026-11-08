@@ -12,7 +12,7 @@ _LISTENERS: list[Callable[[str], None] | weakref.WeakMethod] = []
 
 
 def normalize_lang_code(raw: str | None) -> str | None:
-    """Normalize arbitrary language code strings into 'ru' or 'en'."""
+    """Normalize arbitrary language code strings into 'ru', 'en' or 'tr'."""
     if raw is None:
         return None
     val = raw.strip().lower()
@@ -20,6 +20,8 @@ def normalize_lang_code(raw: str | None) -> str | None:
         return "ru"
     if val in ("en", "eng", "english", "англ", "2"):
         return "en"
+    if val in ("tr", "tur", "turkish", "türkçe", "turkce", "türk", "3", "tr-tr", "tr_tr"):
+        return "tr"
     return None
 
 
@@ -27,8 +29,8 @@ def set_lang(lang: str) -> str:
     """Set active language ('ru' or 'en') and notify registered UI listeners."""
     global _LANG
     norm = normalize_lang_code(lang)
-    if norm not in ("ru", "en"):
-        raise ValueError(f"Unsupported language / Неподдерживаемый язык: {lang!r} (use 'ru' or 'en')")
+    if norm not in ("ru", "en", "tr"):
+        raise ValueError(f"Unsupported language / Неподдерживаемый язык: {lang!r} (use 'ru', 'en' or 'tr')")
     changed = norm != _LANG
     _LANG = norm
     if changed:
@@ -61,7 +63,11 @@ def get_lang() -> str:
 
 
 def tr(ru: str, en: str) -> str:
-    """Return Russian or English string depending on active language."""
+    """Return the string in the active language (ru / en / tr)."""
+    if _LANG == "tr":
+        from contitool.i18n_tr import TR_CATALOG
+
+        return TR_CATALOG.get(en, en)
     return en if _LANG == "en" else ru
 
 

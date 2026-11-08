@@ -948,11 +948,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     ap.add_argument("--version", action="version", version=f"ContiTool v{__version__}")
-    ap.add_argument("-l", "--lang", type=_cli_lang_type, choices=("ru", "en"), help=tr("Язык: ru / en", "Language: ru / en"))
+    ap.add_argument("-l", "--lang", type=_cli_lang_type, choices=("ru", "en", "tr"), help=tr("Язык: ru / en / tr", "Language: ru / en / tr"))
     ap.add_argument("--no-color", action="store_true", help=tr("Отключить ANSI-цвета", "Disable ANSI colors"))
 
     sub_common = argparse.ArgumentParser(add_help=False)
-    sub_common.add_argument("-l", "--lang", type=_cli_lang_type, choices=("ru", "en"), default=argparse.SUPPRESS)
+    sub_common.add_argument("-l", "--lang", type=_cli_lang_type, choices=("ru", "en", "tr"), default=argparse.SUPPRESS)
     sub_common.add_argument("--no-color", action="store_true", default=argparse.SUPPRESS)
 
     sub = ap.add_subparsers(dest="cmd", required=False)

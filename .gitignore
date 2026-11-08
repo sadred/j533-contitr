@@ -6,4 +6,3 @@ dist*/
 *.bin
 *.fsc
 *.json
-!contitr_ayarlar.json
