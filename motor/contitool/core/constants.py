@@ -6,6 +6,7 @@ import dataclasses
 from pathlib import Path
 import re
 import os
+import sys
 
 from contitool.i18n import get_lang
 
@@ -21,6 +22,15 @@ CFLASH_SIZE = 0x00180000
 APP_SIZE = CFLASH_SIZE - APP_BASE   # 1,523,200 bytes (FD_0DATA)
 DFLASH_SIZE = 0x00010000            # 65,536 bytes (DataFlash @ 0xFF200000..0xFF20FFFF)
 UFLASH_SIZE = 0x00008000            # 32,768 bytes (Extended User Area FBL @ 0x01000000..0x01007FFF)
+EEPROM_SIZE = 0x00002000            # 8,192 bytes (External ST M95640 SPI EEPROM, NvM 0x00..0x5F)
+OPBT_LEGACY_SIZE = 32               # 32 bytes (OPBT0..OPBT7 @ 0xFF300070..0xFF30008F)
+OPBT_SIZE = 36                      # 36 bytes (OPBT0..OPBT8 @ 0xFF300070..0xFF300093)
+EXTRA_AREA_SIZE = 256               # 256 bytes (Extra Area @ 0xFF300000..0xFF3000FF)
+CFLASH_IDCODE_OFFSET = 0x0000AB00   # 16-byte RH850 SELFID / IDCODE in CodeFlash boot block 5
+EXTRA_AREA_IDCODE_OFFSET = 0x50     # 16-byte RH850 IDCODE in Extra Area (0xFF300050..0xFF30005F)
+IDCODE_SIZE = 16                    # 128-bit (4 x 32-bit words)
+CHIP_ID_ADDR = 0xFFCD00E0           # 32-byte RH850 SCDS Chip ID register block (0xFFCD00E0..0xFFCD00FF)
+CHIP_ID_SIZE = 32
 
 CFLASH_ADDR_START = 0x00000000
 UFLASH_ADDR_START = 0x01000000
@@ -115,7 +125,7 @@ ZDC_PASSPORT_PN_OFF = 0x0010     # DID 0xF1A0 (11 ASCII chars)
 ZDC_PASSPORT_VER_OFF = 0x0020    # DID 0xF1A1 (4 ASCII chars)
 ZDC_PASSPORT_EQUIP_OFF = 0x0028  # DID 0xF1A4 (12 bytes PR / equipment code)
 ZDC_MAINGW_FPA_MAP_OFF = 0x032C        # 13-byte Inst0 FPA profile map (S028: 1..9 -> FeC 0x10001100..1900, 10..12 -> 4Motion rotary)
-ZDC_MAINGW_FPA_MASK_OFF = 0x0345       # 2-byte BE selectable Inst0 FPA slot bitmask (S030) inside ZDC #4 MainGW
+ZDC_MAINGW_FPA_MASK_OFF = 0x0345       # 2-byte BE S030 in ZDC #4: slots kept as the user's last profile (not the menu)
 ZDC_MAINGW_FPA_INST1_MAP_OFF = 0x0D0B  # 7-byte Inst1 EV/Hybrid FPA profile map (S153: 1 -> FeC 0x10001A00, 2 -> FeC 0x10001B00)
 
 ZDC_DATASET_SPECS: tuple[tuple[int, str, int, int, str, str], ...] = (
@@ -536,6 +546,6 @@ def clean_user_path(raw: str | Path) -> Path:
     s = raw.strip()
     if len(s) >= 2 and ((s[0] == "'" and s[-1] == "'") or (s[0] == '"' and s[-1] == '"')):
         s = s[1:-1]
-    else:
+    elif sys.platform != "win32" and not re.match(r"[A-Za-z]:[\\/]|\\\\", s):  # a backslash separates Windows paths
         s = re.sub(r"\\([ ()\[\]{}&'!#$~])", r"\1", s)
     return Path(os.path.expanduser(s))

@@ -6,7 +6,11 @@ import base64
 from functools import lru_cache
 import zlib
 
-# 217-section byte offsets & element counts inside ZDC #4 (MultiKo / FPA, 4352 B @ 0x1340)
+# ZDC #4 (MultiKo / FPA, 4352 B @ 0x1340) section table as compiled into firmware 5463 / 5504 (217 sections).
+# The table belongs to the firmware build, not to the dataset tag: 5366 has 207 sections + a CRC entry,
+# 5388/5389 have 214, 5463/5504 have 217, and S000..S205 are identical in all of them. From S206 on
+# each build differs (5366 keeps a 517-byte zero reserve there), so only S000..S205 may be edited.
+FPA_SHARED_SECTIONS = 206
 FPA_SEC_OFFS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 15, 16, 18, 19, 20, 21, 22, 23, 38, 518, 534, 598,
  662, 722, 782, 812, 825, 837, 839, 1229, 1259, 1979, 1980, 1981, 1986, 1991, 1996, 2001, 2006,
  2038, 2042, 2046, 2054, 2058, 2060, 2061, 2062, 2064, 2065, 2066, 2067, 2068, 2069, 2070, 2071,
@@ -95,6 +99,18 @@ _TEMPLATE_BLOBS_B85: dict[str, str] = {
     "6wiV#Z4zf3g{)GbjB2|?vDPLKnplYFNVA4R%z?6Y$12Yz84a^%@02crJG#1l139MRJ&G!!u4OiR=r2|1H6n-9w#^"
     "Q-&D&0LfH@~oW<ml3|<0sCXT|RgI%GGPHZr-|m=kC3=`|FQizj?cI>Cwf@7p~vfdRQ1JmdYdJRm*4lGcB!c?H$?9"
     "+VsrqsnahXyx81+Z{T1YjDzuCjj!g~&)=PS9dZ"
+),
+    # factory FPA dataset of a 2019 Tiguan with 4MOTION Active Control (tag OZ00): the knob's input, switches and slots
+    "FPA_OZ00_4MOTION_AC": (
+    "c-"
+    "rlk%}(Pm5Xb)>kCWhpHi|0Pk1i^RBUGro00%Ct&~6XxWiNZ#2iWK00_Q#OJX|Yr;u379Ep3UL1Z}$@^*4%>&cyL};u"
+    ")vkf1aHDj-esY(c&QhLW1aEfrHcYANKqe>*e;g=f>?}!wT8Y3%GWVvk$BEhxV|Clrsbfkzp6D;1^oRNMj;?*ocUL#P"
+    "m2sA4zhDE|@!*h<{u{OtZ|J1xZ#2bzEGN%0nU(Hr!N9hlG=|XIiU&L_kVO(l(`5wohedd+-"
+    "aZB2tR1l=ZFh*%ErZ(#9VlHIepv6?(i{;WAcXv=t|<tb4S3+%H`iG(MWbGt!jE3A?r_>DXU3SI@fC>8t3uem!?yCr8"
+    "hz*F4NFQg+VGW7V0C+nv!>r2KnEjYDRtkt-EWY3q1oEce1DBCuuE;bI}P8Ey&}!KG*LXqq@MJO5~847yg%=2QM-"
+    "2>Roq9HiNzDVWScI8iQ0#noIQl`|L&XkeSt`ga8khkV6DTj4y}_2*R+Dt5NNSh~f%3MuH)Um%5HY4^6`_Ln5ewsjgy"
+    "+WGkD^ZZ)mw)9&~2<05j-50r^I*ZiZmrph2x1m&DCl8k1;QMXY)#x9-"
+    ";y00!@0=ojVy$np{(9a}^PB5p6N3#E|6#xNub%+Q5vZ^"
 ),
     "FPA_JC00_BASE": (
     "c-r%FHZVxxVBlh4WHjPu{KCY*zz)PB3}|2z!zdWWK=D5WFcGO<0E}n|m{`cy%fdmvwcPmSk@CfVrvGrjz)F!{N7E"
@@ -250,7 +266,7 @@ FPA_PROFILE_NAMES: dict[int, tuple[str, str]] = {
     0x08: ("Offroad Individual", "Offroad Individual"),
     0x09: ("Snow / Allroad (Снег)", "Snow / Allroad"),
     0x0A: ("Snow (Снег)", "Snow"),
-    0x0B: ("EV / E-Mode (Электро)", "EV / E-Mode"),
+    0x0B: ("Offroad Individual", "Offroad Individual"),  # Tiguan OZ00: knob position 4, cluster code 0x12
     0x0C: ("GTE / Hybrid (Гибрид)", "GTE / Hybrid"),
     0x14: ("Базовый Normal (без выбора профилей)", "Passive Normal (no FPA)"),
     0x36: ("Шайба 4Motion: Дорога / Снег", "4Motion Rotary: Snow / Onroad"),
@@ -269,7 +285,7 @@ FPA_SLOT_DEFAULTS: dict[int, tuple[int, int, int, int, str, str]] = {
     6: (0x06, 0x10001600, 0x07, 0x0001, "Race / Cupra (Гонка)", "Race / Cupra"),
     7: (0x07, 0x10001700, 0x06, 0x0000, "Individual (Индивидуальный)", "Individual"),
     8: (0x0A, 0x10001800, 0x10, 0x0001, "Snow (Снег)", "Snow"),
-    9: (0x09, 0x10001900, 0x10, 0x0001, "Allroad / Доп. профиль", "Allroad / Extra"),
+    9: (0x0B, 0x10001900, 0x12, 0x0005, "Offroad Individual", "Offroad Individual"),  # as in the Tiguan OZ00
     10: (0x36, 0x00000000, 0x00, 0x0000, "Шайба 4Motion (Снег / Трасса)", "4Motion Rotary (Snow / Onroad)"),
     11: (0x3B, 0x00000000, 0x00, 0x0000, "Шайба 4Motion (Бездорожье)", "4Motion Rotary (Offroad)"),
     12: (0x3A, 0x00000000, 0x06, 0x0005, "Шайба 4Motion (Offroad Индив.)", "4Motion Rotary (Offroad Indiv.)"),
@@ -282,30 +298,45 @@ FPA_INST1_SLOT_DEFAULTS: dict[int, tuple[int, int, str, str]] = {
 }
 
 FPA_SG_CATALOG: dict[int, tuple[str, str]] = {
-    0x01: ("Коробка передач DSG / АКПП", "Gearbox DSG / AT"),
-    0x02: ("Движение накатом (Freilauf)", "Freewheeling / Coasting"),
-    0x03: ("Двигатель (отклик педали газа)", "Engine / Throttle Response"),
-    0x04: ("Рекуперация и тяговый привод", "Recuperation / Powertrain"),
+    0x01: ("Двигатель (отклик педали газа)", "Engine / Throttle Response"),
+    0x02: ("Система Старт-Стоп", "Start-Stop System"),
+    0x03: ("Коробка передач DSG / АКПП", "Gearbox DSG / AT"),
+    0x04: ("Задний межколёсный дифференциал (EDS)", "Rear Differential Lock (EDS)"),
     0x05: ("Рулевое управление (усилие на руле)", "Power Steering"),
-    0x07: ("Фоновая подсветка салона (Ambiente)", "Ambient Lighting"),
-    0x08: ("Адаптивное освещение и поворотный свет", "Adaptive Front Lighting"),
+    0x06: ("Прогрессивное / динамическое рулевое", "Progressive / Dynamic Steering"),
+    0x07: ("Адаптивная подвеска (DCC)", "Adaptive Chassis (DCC)"),
+    0x08: ("Климат-контроль (Climatronic)", "Air Conditioning (Climatronic)"),
     0x09: ("Адаптивный круиз-контроль (ACC)", "Adaptive Cruise Control (ACC)"),
-    0x0A: ("Климат-контроль (Climatronic)", "Air Conditioning (Climatronic)"),
-    0x0B: ("Адаптивная подвеска (DCC)", "Adaptive Chassis (DCC)"),
-    0x0C: ("Блокировка переднего дифференциала (VAQ)", "Front Differential Lock (VAQ)"),
-    0x0E: ("Имитатор звука двигателя (Soundaktor)", "Interior Engine Sound (Soundaktor)"),
-    0x12: ("Система Старт-Стоп", "Start-Stop System"),
-    0x14: ("Задний климат-контроль", "Rear Climate Control"),
-    0x17: ("Пневмоподвеска", "Air Suspension"),
-    0x1C: ("Полный привод 4Motion (муфта Haldex)", "4Motion AWD (Haldex)"),
+    0x0A: ("Имитатор звука двигателя (Soundaktor)", "Interior Engine Sound (Soundaktor)"),
+    0x0B: ("Адаптивное освещение и поворотный свет (AFS)", "Adaptive Front Lighting (AFS)"),
+    0x0C: ("Фоновая подсветка салона (Ambiente)", "Ambient Lighting"),
+    0x0D: ("Пневмоподвеска", "Air Suspension"),
+    0x0E: ("Преднатяжители ремней безопасности", "Seatbelt Pre-Tensioners"),
+    0x0F: ("Боковая поддержка сидений", "Seat Bolster Support"),
+    0x12: ("Движение накатом КПП (Freilauf)", "Freewheeling / DSG Coasting"),
+    0x13: ("Подсказки экономичного вождения (Eco)", "Eco Driving Tips"),
+    0x14: ("Внешний генератор звука выхлопа", "Exterior Exhaust Sound"),
+    0x15: ("Блокировка переднего дифференциала (VAQ)", "Front Differential Lock (VAQ)"),
+    0x16: ("Межосевой дифференциал", "Center Differential Lock"),
+    0x17: ("Полный привод 4Motion (муфта Haldex)", "4Motion AWD (Haldex)"),
+    0x1A: ("Матричные фары (Matrix LED)", "Matrix LED Headlights"),
+    0x1B: ("Задний спойлер", "Rear Spoiler"),
+    0x1C: ("Система курсовой устойчивости (ESC)", "Electronic Stability Control (ESC)"),
+    0x20: ("Гибридный привод", "Hybrid Drive"),
     0x21: ("Силовой агрегат (ДВС + КПП)", "Powertrain (Engine + Gearbox)"),
-    0x23: ("Дополнительный электроотопитель салона", "Auxiliary Cabin Heater"),
-    0x24: ("Климатическая установка", "Climate System"),
-    0x2C: ("Курсовая устойчивость и спуск с горы (ESC)", "Stability & Hill Descent (ESC)"),
-    0x2D: ("Динамическое рулевое управление", "Dynamic Steering"),
-    0x2E: ("Заслонка выхлопа и звук двигателя", "Exhaust Flap & Engine Sound"),
-    0x36: ("Приборная панель и проекция", "Instrument Cluster & HUD"),
-    0x4C: ("Система Старт-Стоп (базовая)", "Start-Stop (Base)"),
+    0x22: ("Шасси (группа)", "Chassis (Group)"),
+    0x23: ("Заслонка выхлопной системы", "Exhaust Flap"),
+    0x24: ("Звук двигателя (салон + выхлоп)", "Engine Sound"),
+    0x2A: ("Подвеска Magnetic Ride", "Magnetic Ride Suspension"),
+    0x2B: ("Подвеска Sport Select", "Sport Select Suspension"),
+    0x2C: ("Ассистент спуска с горы (HDC)", "Hill Descent Control (HDC)"),
+    0x2D: ("Ассистент трогания на подъёме (HHC)", "Hill Hold Control (HHC)"),
+    0x2E: ("Парковочный ассистент (PDC)", "Park Distance Control (PDC)"),
+    0x33: ("Звук электромобиля (e-Sound)", "Electric Vehicle Sound (e-Sound)"),
+    0x36: ("Электроусилитель тормозов (eBKV)", "Electric Brake Booster (eBKV)"),
+    0x3A: ("Распределение тяги (Torque Splitter)", "Torque Splitter"),
+    0x3B: ("Рекуперация энергии", "Energy Recuperation"),
+    0x4C: ("Движение накатом (вкл. по умолчанию)", "Freewheeling (Default ON)"),
 }
 
 FPA_TARGET_MODE_NAMES: dict[int, tuple[str, str]] = {
@@ -317,10 +348,9 @@ FPA_TARGET_MODE_NAMES: dict[int, tuple[str, str]] = {
     5: ("Eco (Эко)", "Eco"),
     6: ("Race / Cupra (Гонка)", "Race / Cupra"),
     7: ("Individual", "Individual"),
-    8: ("Авто / Базовый режим", "Auto / Base mode"),
-    9: ("Мягкий / Eco-климат", "Eco / Mild climate"),
+    8: ("Вкл (On)", "On"),
+    9: ("Выкл (Off)", "Off"),
     10: ("Snow (Снег)", "Snow"),
-    13: ("Спортивная подсветка", "Sport lighting"),
 }
 
 # Steering-wheel LIN MFL_Tastencode presets (DID 0x1F07 byte 1)

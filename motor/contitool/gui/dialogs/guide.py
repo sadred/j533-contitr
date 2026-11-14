@@ -67,11 +67,11 @@ class GuideDialog(Dialog):
         ika = _text()
         ika.setText(
             tr(
-                "Привязку проверяет сам модуль — мультимедиа, приборная панель, усилитель и другие. "
+                "Адаптацию проверяет сам модуль — магнитола, приборная панель, усилитель и другие. "
                 "Он сравнивает ответ шлюза со своим 16-байтным ключом <b>IKA</b>, поэтому ключ должен совпадать "
                 "с обеих сторон.<br><br>"
-                "<b>Ключ донора.</b> Прочитайте открытый ключ IKA из дампа самого модуля и укажите его при привязке.<br>"
-                "<b>Своя пара.</b> Нажмите «Сгенерировать» в окне привязки и запишите один и тот же ключ "
+                "<b>Ключ донора.</b> Прочитайте открытый ключ IKA из дампа самого модуля и укажите его при адаптации.<br>"
+                "<b>Своя пара.</b> Нажмите «Сгенерировать» в окне адаптации и запишите один и тот же ключ "
                 "и в шлюз, и в слот IKA модуля.<br><br>"
                 "Не подходят 16 нулей (<code>00..00</code>) и строка <code>000000000000000000000000000000E5</code> — "
                 "это заголовок зашифрованного контейнера, а не ключ.",
@@ -94,15 +94,15 @@ class GuideDialog(Dialog):
                 "1. Подключите блок по схеме выше и настройте адаптер.<br>"
                 "2. Считайте блок — ContiTool сохранит полную копию памяти и откроет её.<br>"
                 "3. Внесите нужные изменения: они пишутся в копии файлов, оригинал бэкапа не трогается.<br>"
-                "4. Нажмите «Записать в блок». Перед записью снимается резервная копия, после — побайтовая проверка чтением.<br><br>"
+                "4. Нажмите «Записать в блок». Каждая записываемая область сначала читается из блока, после записи — проверяется чтением.<br><br>"
                 "Все три области памяти (<b>CodeFlash</b> включая область загрузчика, <b>DataFlash</b> 64 КБ и <b>Uflash</b> 32 КБ) "
-                "читаются и записываются напрямую по CAN — внешний программатор не требуется.",
+                "читаются и записываются по CAN, программатор не нужен.",
                 "1. Wire the ECU as shown above and set up the adapter.<br>"
                 "2. Read the ECU — ContiTool saves a full memory copy and opens it.<br>"
                 "3. Make your changes: they go into copies of the files, the backup itself is never touched.<br>"
-                "4. Click “Write to ECU”. A backup is taken first, and the result is verified byte by byte.<br><br>"
+                "4. Click “Write to ECU”. Each area to be written is read from the ECU first and verified by reading it back after.<br><br>"
                 "All three memory regions (<b>CodeFlash</b> including boot blocks, <b>DataFlash</b> 64 KB, and <b>Uflash</b> 32 KB) "
-                "are read and written directly over CAN — no external programmer is needed.",
+                "are read and written over CAN; no programmer is needed.",
             )
         )
         body.addWidget(order)
@@ -120,6 +120,23 @@ class GuideDialog(Dialog):
             "<b>Во время первичного чтения связь оборвалась, и шлюз не выходит на связь.</b><br>"
             "Выключите зажигание на несколько секунд и включите снова, в крайнем случае снимите клемму аккумулятора. "
             "На столе — снимите питание +12 В на несколько секунд. И вообще, на живой машине лучше с этим не играть.<br><br>"
+            "<b>Нужен ли ODIS, чтобы работать с VAS 6154 / VNCI?</b><br>"
+            "Нет. Драйвер D-PDU 27.2 идёт вместе с ContiTool (папка <code>dpdu/</code> рядом с программой). В системе нужен "
+            "только USB-драйвер самого адаптера — дополнение для VAS 6154 из пакета «VW D-PDU API»; сам ODIS не "
+            "требуется.<br><br>"
+            "<b>На компьютере несколько драйверов D-PDU — какой возьмёт программа?</b><br>"
+            "Все найденные показываются отдельными строками в окне «Подключение» с версией каждого. По умолчанию выбирается "
+            "драйвер 27.2 из комплекта ContiTool, но можно выбрать любой другой — выбор запоминается. На драйверах 30 и новее "
+            "работа сейчас нестабильна: адаптер зависает посреди прошивки по UDS, поэтому для них нужна отдельная "
+            "галочка.<br><br>"
+            "<b>Драйвер перепрошивает адаптер — это нормально?</b><br>"
+            "Да. При подключении драйвер D-PDU сам записывает в VAS 6154 / VNCI прошивку своей версии (около 30 секунд) — "
+            "дождитесь окончания и не отключайте адаптер. Это безопасно: ODIS при следующем подключении так же запишет в "
+            "адаптер свою версию. Пока работает ContiTool, ODIS и VCTool должны быть закрыты.<br><br>"
+            "<b>Нужен драйвер другой версии.</b><br>"
+            "Скопируйте папку установленного драйвера в <code>dpdu/</code> рядом с ContiTool, к лежащей там "
+            "<code>VW_PDUAPI_27.2</code> — программа найдёт её сама. Запись в реестр и права администратора не нужны, нужна "
+            "64-разрядная сборка.<br><br>"
             "<b>Как сообщить о проблеме?</b><br>"
             "После ошибки ContiTool сам предложит отчёт (или «Справка → Сообщить о проблеме…»): соберёт архив с журналами "
             "и откроет страницу нового issue на GitHub. В личные сообщения автору не пишите.",
@@ -133,6 +150,23 @@ class GuideDialog(Dialog):
             "<b>The link dropped during the first read and the gateway no longer answers.</b><br>"
             "Switch the ignition off for a few seconds and back on; as a last resort disconnect the battery terminal. "
             "On the bench, cut the +12 V supply for a few seconds. And in general, better not play with this on a live car.<br><br>"
+            "<b>Do I need ODIS to use a VAS 6154 / VNCI?</b><br>"
+            "No. D-PDU driver 27.2 comes with ContiTool (the <code>dpdu/</code> folder next to the program). The system only "
+            "needs the adapter's own USB driver — the VAS 6154 add-on of the VW D-PDU API package; ODIS itself is not "
+            "required.<br><br>"
+            "<b>Several D-PDU drivers are installed — which one does ContiTool use?</b><br>"
+            "Every one it finds is its own row in the Connection window with its version. The driver 27.2 that comes with "
+            "ContiTool is picked by default, but you can choose any other and the choice is remembered. On drivers 30 and "
+            "newer work is unstable at the moment: the adapter hangs partway through a UDS flash, so those need a separate "
+            "tick.<br><br>"
+            "<b>The driver reflashes the adapter — is that normal?</b><br>"
+            "Yes. On connect the D-PDU driver itself writes firmware of its version into the VAS 6154 / VNCI (about 30 "
+            "seconds) — let it finish and do not unplug the adapter. This is safe: ODIS writes its own version back into the "
+            "adapter the next time it connects. ODIS and VCTool must stay closed while ContiTool is working.<br><br>"
+            "<b>I need a driver of another version.</b><br>"
+            "Copy the installed driver's folder into <code>dpdu/</code> next to ContiTool, beside the "
+            "<code>VW_PDUAPI_27.2</code> that is there — it is found automatically. No registry entry and no administrator "
+            "rights needed; it must be the 64-bit build.<br><br>"
             "<b>How do I report a problem?</b><br>"
             "After an error ContiTool offers a report itself (or Help → Report a problem…): it collects an archive with "
             "the logs and opens a new issue on GitHub. Please do not message the author directly.",

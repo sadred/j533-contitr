@@ -25,7 +25,7 @@ if str(MOTOR) not in sys.path:
     sys.path.insert(0, str(MOTOR))
 ASSETS = MEIPASS / "assets"
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1.1"
 
 
 def _early_lang(argv: list[str]) -> str:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QShowEvent
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -21,33 +22,54 @@ from contitool.i18n import tr
 
 
 class Section(QFrame):
-    """Bordered surface with a title row (actions on the right), optional description, and body."""
+    """Unified single-surface architectural card: title row, body, and optional bottom action row."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("Section")
-        self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(20, 16, 20, 18)
-        self.body.setSpacing(12)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
 
-        self.head = QHBoxLayout()
+        self._head_bar = QWidget()
+        self.head = QHBoxLayout(self._head_bar)
+        self.head.setContentsMargins(18, 14, 18, 2)
         self.head.setSpacing(8)
         self.lbl_title = QLabel()
         self.lbl_title.setObjectName("SectionTitle")
         self.head.addWidget(self.lbl_title)
         self.head.addStretch(1)
-        self.body.addLayout(self.head)
+        self._outer.addWidget(self._head_bar)
+
+        self._body_wrap = QWidget()
+        self.body = QVBoxLayout(self._body_wrap)
+        self.body.setContentsMargins(18, 6, 18, 16)
+        self.body.setSpacing(10)
 
         self.lbl_desc = QLabel()
         self.lbl_desc.setObjectName("Hint")
         self.lbl_desc.setWordWrap(True)
         self.lbl_desc.setVisible(False)
         self.body.addWidget(self.lbl_desc)
+        self._outer.addWidget(self._body_wrap, 1)
 
     def hide_head(self) -> None:
         """For sections whose heading is carried by their own content."""
-        self.lbl_title.setVisible(False)
-        self.body.removeItem(self.head)
+        self._head_bar.setVisible(False)
+        self.body.setContentsMargins(16, 12, 16, 12)
+
+    def add_footer(self, *buttons: QWidget) -> QHBoxLayout:
+        """Append a clean action row inside the same card surface."""
+        self.body.setContentsMargins(18, 6, 18, 10)
+        foot = QWidget()
+        lay = QHBoxLayout(foot)
+        lay.setContentsMargins(18, 4, 18, 16)
+        lay.setSpacing(8)
+        for b in buttons:
+            lay.addWidget(b)
+        lay.addStretch(1)
+        self._outer.addWidget(foot)
+        return lay
 
     def set_text(self, title: str, desc: str = "") -> None:
         self.lbl_title.setText(title)
@@ -71,7 +93,7 @@ class Callout(QFrame):
 
 
 def pill(text: str = "", tone: str = "muted") -> QLabel:
-    """Rounded status badge; change later with set_pill()."""
+    """Borderless semantic status readout; change later with set_pill()."""
     lbl = QLabel()
     lbl.setObjectName("Pill")
     set_pill(lbl, text, tone)
@@ -82,6 +104,15 @@ def set_pill(lbl: QLabel, text: str, tone: str) -> None:
     lbl.setText(text)
     set_tone(lbl, tone)
     lbl.setVisible(bool(text))
+
+
+def status_readout(text: str = "", tone: str = "muted") -> QLabel:
+    """Pure typographic status readout (zero LED dot, zero pill border)."""
+    lbl = QLabel(text)
+    lbl.setObjectName("StatusReadout")
+    set_tone(lbl, tone)
+    lbl.setVisible(bool(text))
+    return lbl
 
 
 def group_label(text: str = "") -> QLabel:
@@ -117,6 +148,12 @@ def divider() -> QFrame:
     return line
 
 
+def vdivider() -> QFrame:
+    line = QFrame()
+    line.setObjectName("VDivider")
+    return line
+
+
 def button(text: str, kind: str = "", slot=None) -> QPushButton:  # noqa: ANN001
     """QPushButton with an optional style kind (PrimaryBtn / DangerBtn / GhostBtn) and click handler."""
     b = QPushButton(text)
@@ -144,28 +181,46 @@ def row(*items: QWidget | QLayout | int, spacing: int = 8) -> QHBoxLayout:
 
 
 class Dialog(QDialog):
-    """Modal dialog frame: title, optional subtitle, body, and a bottom button row (built per open, current language)."""
+    """Modal dialog frame: title, optional subtitle, body, and a bottom button row (built per open, current language).
+
+    The body scrolls and the dialog never grows past the screen it opens on: on a low-DPI or small screen a tall
+    dialog used to run off the bottom together with its buttons, with no way to reach them. The button row sits
+    outside the scrolling body, so it is always on screen. Subclasses keep adding to `self.body`."""
 
     def __init__(self, parent: QWidget | None, title: str, subtitle: str = "", width: int = 640) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setModal(True)
         self._min_width = width
-        self.resize(width, 10)
-        self.body = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        self.body = QVBoxLayout(content)
         self.body.setContentsMargins(24, 20, 24, 20)
         self.body.setSpacing(14)
+        self._scroll.setWidget(content)
+        outer.addWidget(self._scroll, 1)
+        self._footer = QWidget()
+        self._footer.setObjectName("DialogFooter")
+        self.buttons = QHBoxLayout(self._footer)
+        self.buttons.setContentsMargins(24, 12, 24, 14)
+        self.buttons.setSpacing(8)
+        self._footer.setHidden(True)  # finish() shows it
+        outer.addWidget(self._footer)
         lbl = QLabel(title)
         lbl.setObjectName("PageTitle")
         self.body.addWidget(lbl)
         if subtitle:
             self.body.addWidget(hint(subtitle))
-        self.buttons = QHBoxLayout()
-        self.buttons.setSpacing(8)
+        self.body.addWidget(divider())
+        self.resize(width, 10)
 
     def finish(self, *left: QWidget, ok: QPushButton | None = None, cancel_text: str = "") -> None:
         """Append the button row: `left` widgets, stretch, Cancel/Close, then the primary `ok` button."""
-        self.body.addSpacing(4)
         for w in left:
             self.buttons.addWidget(w)
         self.buttons.addStretch(1)
@@ -173,18 +228,49 @@ class Dialog(QDialog):
         if ok is not None:
             ok.setDefault(True)
             self.buttons.addWidget(ok)
-        self.body.addLayout(self.buttons)
+        self._footer.setHidden(False)
         self.ensurePolished()  # style-sheet fonts first
-        self.adjustSize()  # grow to fit the content the subclass just added
-        self.resize(max(self.width(), self._min_width), self.height())
+        content = self._scroll.widget().sizeHint().width() + self._scroll.verticalScrollBar().sizeHint().width()
+        self.resize(max(content, self._footer.sizeHint().width(), self._min_width), self.height())
         self.fit_height()
 
     def fit_height(self) -> None:
-        """Height for the current width. adjustSize() underestimates wrapped text, and the layout then squeezes a label
-        (its last line was cut off); call this again after showing or hiding a text."""
-        lay = self.layout()
-        if lay is not None and lay.hasHeightForWidth():
-            self.resize(self.width(), lay.totalHeightForWidth(self.width()))
+        """Height for the current width, never taller than the screen — what does not fit scrolls. adjustSize()
+        underestimates wrapped text and only sees the scroll area; call this again after showing or hiding a text."""
+        h = (self.body.totalHeightForWidth(self.width()) if self.body.hasHeightForWidth()
+             else self._scroll.widget().sizeHint().height())
+        if not self._footer.isHidden():
+            h += self._footer.sizeHint().height()
+        self.resize(self.width(), h)
+        self._fit_screen()
+
+    def _fit_screen(self) -> None:
+        """Shrink to the screen's free area (taskbar excluded), leaving room for the window frame and title bar."""
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        if scr is None:
+            return
+        avail = scr.availableGeometry()
+        if avail.width() < 640 or avail.height() < 480:
+            return
+        w, h = min(self.width(), avail.width() - 24), min(self.height(), avail.height() - 64)
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt naming
+        """Sizes set by a subclass (resize(940, 780)…) are checked against the screen here, and the window is moved
+        fully onto it: centred over a parent near a screen edge it could open half outside."""
+        super().showEvent(event)
+        self._fit_screen()
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        if scr is None:
+            return
+        avail, geo = scr.availableGeometry(), self.frameGeometry()
+        if avail.width() < 640 or avail.height() < 480:
+            return
+        x = min(max(geo.x(), avail.x()), avail.x() + avail.width() - geo.width())
+        y = min(max(geo.y(), avail.y()), avail.y() + avail.height() - geo.height())
+        if (x, y) != (geo.x(), geo.y()):
+            self.move(x, y)
 
 
 def run_dialog(dlg: QDialog) -> int:

@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import time
 
-from PySide6.QtCore import QSettings, QTimer, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -27,8 +27,8 @@ from PySide6.QtWidgets import (
 
 from contitool.cli.formatting import format_bytes_human, format_eta
 from contitool.gui import theme
-from contitool.gui.theme import dot_icon, mono_font, set_tone
-from contitool.gui.widgets.page import button
+from contitool.gui.theme import mono_font, set_tone, ui_font
+from contitool.gui.widgets.page import button, vdivider
 from contitool.gui.worker import OperationRunner
 from contitool.i18n import subscribe_lang_change, tr
 from contitool.progress import LogEntry, ProgressSnapshot, StepSnapshot
@@ -94,14 +94,18 @@ class ExecutionPanel(QFrame):
         self._state = "idle"  # idle | running | ok | err | cancel
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 8, 20, 12)
-        lay.setSpacing(6)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        hdr = QHBoxLayout()
+        hdr_bar = QFrame()
+        hdr_bar.setObjectName("ConsoleHeader")
+        hdr_bar.setFixedHeight(34)
+        hdr = QHBoxLayout(hdr_bar)
+        hdr.setContentsMargins(18, 0, 18, 0)
         hdr.setSpacing(8)
         self.lbl_title = QLabel()
-        self.lbl_title.setObjectName("SectionTitle")
-        hdr.addWidget(self.lbl_title)
+        self.lbl_title.setObjectName("GroupLabel")
+        hdr.addWidget(self.lbl_title, 0, Qt.AlignmentFlag.AlignVCenter)
         hdr.addSpacing(6)
         self.btn_short = QPushButton()
         self.btn_full = QPushButton()
@@ -111,18 +115,20 @@ class ExecutionPanel(QFrame):
             b.setProperty("pos", pos)
             b.setCheckable(True)
             group.addButton(b)
-            hdr.addWidget(b)
+            hdr.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
         hdr.addStretch(1)
         self.btn_open_dir = button("", "GhostBtn", slot=self._on_open_target)
         self.btn_open_dir.setVisible(False)
         self.btn_copy = button("", "GhostBtn", slot=self._on_copy_logs)
         self.btn_clear = button("", "GhostBtn", slot=self.clear_logs)
-        for b in (self.btn_open_dir, self.btn_copy, self.btn_clear):
-            hdr.addWidget(b)
-        lay.addLayout(hdr)
+        self.btn_hide = button("", "GhostBtn")
+        for b in (self.btn_open_dir, self.btn_copy, self.btn_clear, self.btn_hide):
+            hdr.addWidget(b, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(hdr_bar)
 
         self.txt_short = QTextBrowser()
         self.txt_short.setOpenLinks(False)
+        self.txt_short.setFont(ui_font(12))
         self.txt_full = QPlainTextEdit()
         self.txt_full.setReadOnly(True)
         self.txt_full.setFont(mono_font(12))
@@ -151,41 +157,50 @@ class ExecutionPanel(QFrame):
         runner.log_added.connect(self._on_log)
         runner.operation_finished.connect(self._on_finished)
 
-        self._unsub = subscribe_lang_change(lambda _l: self.retranslate_ui())
+        self._unsub = subscribe_lang_change(self._on_lang_changed)
+        self.retranslate_ui()
+
+    def _on_lang_changed(self, _lang: str) -> None:
         self.retranslate_ui()
 
     def _build_status(self) -> QWidget:
-        w = QWidget()
+        w = QFrame()
+        w.setObjectName("StatusStrip")
+        w.setFixedHeight(32)
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(14, 3, 16, 3)
-        lay.setSpacing(8)
-        self.lbl_dot = QLabel()
-        lay.addWidget(self.lbl_dot)
+        lay.setContentsMargins(18, 0, 18, 0)
+        lay.setSpacing(10)
         self.lbl_status = QLabel()
         self.lbl_status.setObjectName("FieldLabel")
-        lay.addWidget(self.lbl_status)
+        lay.addWidget(self.lbl_status, 0, Qt.AlignmentFlag.AlignVCenter)
         self.lbl_step = QLabel()
         self.lbl_step.setObjectName("Hint")
         self.lbl_step.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        lay.addWidget(self.lbl_step, 1)
+        lay.addWidget(self.lbl_step, 1, Qt.AlignmentFlag.AlignVCenter)
         self.lbl_metrics = QLabel()
         self.lbl_metrics.setFont(mono_font(12))
         set_tone(self.lbl_metrics, "muted")
-        lay.addWidget(self.lbl_metrics)
+        lay.addWidget(self.lbl_metrics, 0, Qt.AlignmentFlag.AlignVCenter)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedWidth(160)
         self.progress_bar.setVisible(False)
-        lay.addWidget(self.progress_bar)
+        lay.addWidget(self.progress_bar, 0, Qt.AlignmentFlag.AlignVCenter)
         self.btn_stop = button("", "DangerBtn", slot=self.runner.cancel_current)
         self.btn_stop.setVisible(False)
-        lay.addWidget(self.btn_stop)
+        lay.addWidget(self.btn_stop, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.status_divider = vdivider()
+        self.status_divider.setFixedHeight(14)
+        lay.addWidget(self.status_divider, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.btn_toggle_log = button("", "StatusBtn")
+        self.btn_toggle_log.setCheckable(True)
+        lay.addWidget(self.btn_toggle_log, 0, Qt.AlignmentFlag.AlignVCenter)
         return w
 
     # ────────────────────────────── text ──────────────────────────────
     def retranslate_ui(self) -> None:
-        self.lbl_title.setText(tr("Журнал", "Log"))
+        self.lbl_title.setText(tr("ЖУРНАЛ ОПЕРАЦИЙ", "OPERATION LOG"))
         self.btn_short.setText(tr("Кратко", "Summary"))
         self.btn_full.setText(tr("Подробно", "Detailed"))
         self.btn_full.setToolTip(tr("Полный технический лог: адреса, UDS, CAN", "Full technical log: addresses, UDS, CAN"))
@@ -193,21 +208,24 @@ class ExecutionPanel(QFrame):
         self.btn_copy.setText(tr("Копировать", "Copy"))
         self.btn_copy.setToolTip(tr("Копирует подробный лог", "Copies the detailed log"))
         self.btn_clear.setText(tr("Очистить", "Clear"))
+        self.btn_hide.setText(tr("Скрыть", "Hide"))
+        self.btn_toggle_log.setText(tr("Журнал", "Log"))
+        self.btn_toggle_log.setToolTip(tr("Показать или скрыть журнал операций (Ctrl+J)", "Show or hide the operation log (Ctrl+J)"))
         self.btn_stop.setText(tr("Остановить", "Stop"))
         self._apply_status()
         self._render_short()
 
     def _apply_status(self) -> None:
         labels = {
-            "idle": (theme.TEXT_MUTED, "muted", tr("Готов к работе", "Ready")),
-            "running": (theme.INFO, "info", tr("Выполняется", "Running")),
-            "ok": (theme.OK, "ok", tr("Готово", "Done")),
-            "err": (theme.ERR, "err", tr("Ошибка", "Failed")),
-            "cancel": (theme.WARN, "warn", tr("Остановлено", "Stopped")),
+            "idle": ("muted", tr("Готов к работе", "Ready")),
+            "running": ("info", tr("Выполняется", "Running")),
+            "ok": ("ok", tr("Готово", "Done")),
+            "err": ("err", tr("Ошибка", "Failed")),
+            "cancel": ("warn", tr("Остановлено", "Stopped")),
         }
-        col, tone, text = labels[self._state]
-        self.lbl_dot.setPixmap(dot_icon(col).pixmap(16, 16))
+        tone, text = labels[self._state]
         self.lbl_status.setText(text)
+        set_tone(self.lbl_status, tone)
         set_tone(self.progress_bar, tone)
         self.lbl_step.setText(self._step_text)
         self.lbl_step.setToolTip(self._step_text)
@@ -264,7 +282,7 @@ class ExecutionPanel(QFrame):
             if snap.eta_sec is not None:
                 parts.append(tr(f"осталось {format_eta(snap.eta_sec)}", f"{format_eta(snap.eta_sec)} left"))
         parts.append(format_eta(time.monotonic() - self._started_mono))
-        self.lbl_metrics.setText("  ·  ".join(parts))
+        self.lbl_metrics.setText("    ".join(parts))
 
     def _on_log(self, entry: LogEntry) -> None:
         ts = time.strftime("%H:%M:%S", time.localtime(entry.timestamp)) + f".{int(entry.timestamp * 1000) % 1000:03d}"
@@ -306,7 +324,7 @@ class ExecutionPanel(QFrame):
             "err": (theme.ERR, tr("Ошибка", "Failed")),
             "cancel": (theme.WARN, tr("Остановлено", "Stopped")),
         }[self._state]
-        self._full_line(f"<span style='color:{col}'>── {word} · {_duration(elapsed)}</span>")
+        self._full_line(f"<span style='color:{col}'>── {word} ({_duration(elapsed)})</span>")
 
     # ────────────────────────────── journal ──────────────────────────────
     def _add_item(self, item: _Op | _Note) -> None:
@@ -330,17 +348,26 @@ class ExecutionPanel(QFrame):
             "err": (theme.ERR, tr("ошибка", "failed")),
             "cancel": (theme.WARN, tr("остановлено", "stopped")),
         }
+        if not self._items:
+            idle = html.escape(
+                tr(
+                    "Журнал операций пуст — ход чтения, записи и диагностики отображается здесь.",
+                    "Operation log is empty — read, write, and diagnostic progress appears here.",
+                )
+            )
+            self.txt_short.setHtml(f"<div style='color:{muted}; padding-top:2px'>{idle}</div>")
+            return
         rows: list[str] = []
         for it in self._items:
             ts = time.strftime("%H:%M:%S", time.localtime(it.started if isinstance(it, _Op) else it.at))
-            time_cell = f"<td width='70' style='color:{muted}; font-family:{mono}'>{ts}</td>"
+            time_cell = f"<td width='70' style=\"color:{muted}; font-family:'{mono}'\">{ts}</td>"
             if isinstance(it, _Note):
                 rows.append(f"<tr>{time_cell}<td colspan='2' style='color:{secondary}'>{html.escape(it.text)}</td></tr>")
                 continue
             col, word = states[it.state]
             right = f"<span style='color:{col}'>{word}</span>"
             if it.state != "running":
-                right += f"<span style='color:{muted}'> · {_duration(it.elapsed)}</span>"
+                right += f"<span style='color:{muted}'>&nbsp;&nbsp;{_duration(it.elapsed)}</span>"
             rows.append(
                 f"<tr>{time_cell}<td style='color:{theme.TEXT}; font-weight:600'>{html.escape(it.title)}</td>"
                 f"<td align='right'>{right}</td></tr>"

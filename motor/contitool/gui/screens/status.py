@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
+from pathlib import Path
 
-from contitool.core import KNOWN_GATEWAY_FECS, STOCK_FBL_MODULUS, STOCK_SWAP_MODULUS, check_fec_dataset_support
+from contitool.core import (
+    KNOWN_GATEWAY_FECS,
+    STOCK_FBL_MODULUS,
+    STOCK_SWAP_MODULUS,
+    check_fec_dataset_support,
+    format_chip_id,
+    format_idcode,
+)
+from contitool.can.workflows import SWAP_STATUS_ACTIVE
+from contitool.core.analyzer import analyze_dflash_swap
 from contitool.gui.workspace import Workspace
 from contitool.i18n import tr
 
@@ -44,7 +55,7 @@ def component_protection(ws: Workspace) -> State:
             tr("заводская", "factory"),
             "ok",
             tr(
-                "Блок работает только со штатно привязанными модулями автомобиля.",
+                "Адаптированы только заводские модули автомобиля.",
                 "The gateway only works with the vehicle's factory-paired modules.",
             ),
             key="stock",
@@ -79,8 +90,8 @@ def engineering(ws: Workspace) -> State:
             tr("выключен", "off"),
             "ok",
             tr(
-                "Расширенная диагностика недоступна — заводское состояние.",
-                "Extended diagnostics unavailable — factory state.",
+                "Заводское состояние: инженерные службы выключены.",
+                "Factory state: the engineering services are off.",
             ),
             key="off",
         )
@@ -175,7 +186,7 @@ _SWAP_CHECKS = (
 
 def swap_live_state(st: int) -> State:
     """What the gateway's own status byte for one feature means; `detail` lists the failed checks."""
-    if st & 0x7F == 0x7F:
+    if st & SWAP_STATUS_ACTIVE == SWAP_STATUS_ACTIVE:  # the gateway's own test (IsFecActive)
         return State(tr("активна", "active"), "ok", key="on")
     if not st & 0x01:
         return State(tr("не активирована", "not activated"), "muted", key="off")
@@ -201,9 +212,34 @@ def swap_live_summary(features: list[dict], ws: Workspace) -> State:
     return State(text, "ok", key="on")
 
 
+def _is_profile_fec(code: int) -> bool:
+    return (code & 0xFFFFF0FF) == 0x10001000
+
+
+def _active_fecs_in(path: Path | None) -> set[int]:
+    try:
+        return set(_active_fecs_cached(str(path), path.stat().st_mtime_ns)) if path else set()
+    except OSError:
+        return set()
+
+
+@functools.lru_cache(maxsize=8)
+def _active_fecs_cached(path: str, _mtime_ns: int) -> frozenset[int]:
+    """The original dump's FeCs; read once per file version, not on every refresh of the screen."""
+    try:
+        return frozenset(f.fec_code for f in analyze_dflash_swap(Path(path).read_bytes()).active_fscs)
+    except (OSError, ValueError):
+        return frozenset()
+
+
 def unsupported_active_fecs(ws: Workspace) -> list[int]:
-    """Active FeC codes in DataFlash that are NOT supported by the currently flashed ZDC dataset."""
-    return [fec for fec, _, _, _, ds_ok in active_features_detailed(ws) if not ds_ok]
+    """Active FeCs the dataset has no data for. A driving-profile FeC counts only if it was switched on after the dump
+    was opened: a profile taken out of the menu keeps its FeC, and the gateway then simply does not offer it."""
+    rows = [fec for fec, _, _, _, ds_ok in active_features_detailed(ws) if not ds_ok]
+    if any(_is_profile_fec(c) for c in rows):
+        before = _active_fecs_in(ws.original.get("dflash"))
+        rows = [c for c in rows if not _is_profile_fec(c) or c not in before]
+    return rows
 
 
 def dataset_state(ws: Workspace) -> State:
@@ -240,8 +276,8 @@ def parameterization(ws: Workspace) -> State:
             tr("пусто", "empty"),
             "warn",
             tr(
-                "В этом дампе ещё не настроена параметрия — вы можете создать её с нуля по готовому шаблону автомобиля.",
-                "No parameterization is stored in this dump yet — you can create one from a ready-made vehicle template.",
+                "Параметрия в этом дампе не настроена. Её можно создать по шаблону автомобиля.",
+                "This dump has no parameterization yet. It can be created from a car template.",
             ),
             key="off",
         )
@@ -251,8 +287,9 @@ def parameterization(ws: Workspace) -> State:
             tr("нужна настройка", "needs setup"),
             "warn",
             tr(
-                f"Часть включённых функций SWaP ({len(unsup)}) ещё не добавлена в параметрию — нажмите кнопку ниже для автоматической настройки.",
-                f"{len(unsup)} enabled SWaP feature(s) are missing from the parameterization — click below to configure automatically.",
+                f"Для части включённых FEC ({len(unsup)}) в параметрии нет данных. Кнопка ниже их добавит.",
+                f"The parameterization has no data for some enabled FECs ({len(unsup)}). The button below adds "
+                "them.",
             ),
             key="warn",
         )
@@ -293,17 +330,27 @@ def swap_features(ws: Workspace) -> State:
 
 
 def passport_rows(ws: Workspace) -> list[tuple[str, str, str]]:
-    """(label, value, tone) lines for the ECU identity card."""
+    """Atomic (label, value, tone) columns for the ECU identity bar — one field per column, zero middle dots."""
     rows: list[tuple[str, str, str]] = []
     cf = ws.info("cflash")
+    ee = ws.info("eeprom")
+    e = ee.eeprom_info if ee else None
     if cf and cf.cflash_info:
         c = cf.cflash_info
+        sw_pn = c.sw_pn or (e.part_number if e and c.sw_ver and e.sw_version == c.sw_ver else "")
+        if sw_pn:
+            rows.append((tr("Номер ПО", "SW part"), sw_pn, "muted"))
+        if c.sw_ver:
+            rows.append((tr("Версия ПО", "Software"), c.sw_ver, "muted"))
+        if sw_pn and c.hw_pn:
+            rows.append((tr("Железо", "HW part"), c.hw_pn, "muted"))
         if c.hw_ver:
-            rows.append((tr("Версия ПО", "Software"), c.hw_ver, "muted"))
+            rows.append((tr("Ревизия HW", "Hardware"), c.hw_ver, "muted"))
         rows.append(
             (
                 tr("Контрольная сумма", "Checksum"),
-                tr("верна", "valid") if c.crc_ok else tr("не сходится", "mismatch"),
+                tr("верна", "valid") if c.crc_ok else tr("не сходится", "mismatch") if c.crc_range_count
+                else tr("нет таблицы CRC: приложение стёрто или повреждено", "no CRC table: application erased or damaged"),
                 "ok" if c.crc_ok else "err",
             )
         )
@@ -316,4 +363,60 @@ def passport_rows(ws: Workspace) -> list[tuple[str, str, str]]:
             rows.append(("VIN", sw.vin, "muted"))
         if sw.vcrn:
             rows.append(("VCRN", sw.vcrn.hex().upper(), "muted"))
+    if e:
+        if not any(lbl == "VIN" for lbl, _, _ in rows) and e.vin:
+            rows.append(("VIN", e.vin, "muted"))
+        if not cf:
+            if e.part_number:
+                rows.append((tr("Номер ПО (EEPROM)", "SW part (EEPROM)"), e.part_number, "muted"))
+            if e.sw_version:
+                rows.append((tr("Версия ПО (EEPROM)", "Software (EEPROM)"), e.sw_version, "muted"))
+    idcode = getattr(ws, "idcode", b"") or (cf.cflash_info.idcode if cf and cf.cflash_info else b"")
+    if idcode:
+        rows.append(("IDCODE", format_idcode(idcode), "muted"))
+    chip_id = getattr(ws, "chip_id", b"")
+    if chip_id:
+        rows.append(("CHIP ID", format_chip_id(chip_id, include_lot=True), "muted"))
     return rows
+
+
+def hardware_extras(ws: Workspace) -> State:
+    """Navigation pill state for the Read-Only Hardware Extras (`hw`: M95640 EEPROM & RH850 OPBT) page."""
+    has_ee = ws.info("eeprom") is not None
+    has_op = ws.info("opbt") is not None
+    warns = ws.read_warnings
+    if warns and not (has_ee and has_op):
+        return State(
+            tr("предупреждение", "warning"),
+            "warn",
+            " ".join(warns.values()),
+            key="warn",
+        )
+    if has_ee and has_op:
+        return State(
+            tr("EEPROM + OPBT", "EEPROM + OPBT"),
+            "ok",
+            tr("Загружены внешняя EEPROM M95640 (8 КБ) и OPBT0..OPBT8 (36 Б).", "External M95640 EEPROM (8 KB) and OPBT0..OPBT8 (36 B) loaded."),
+            key="on",
+        )
+    if has_ee:
+        return State(
+            "EEPROM",
+            "ok",
+            tr("Загружена внешняя SPI EEPROM M95640 (8 КБ).", "External M95640 SPI EEPROM (8 KB) loaded."),
+            key="partial",
+        )
+    if has_op:
+        return State(
+            "OPBT",
+            "ok",
+            tr("Загружены опционные байты RH850 OPBT.", "RH850 Option Bytes (OPBT) loaded."),
+            key="partial",
+        )
+    return State(
+        UNKNOWN,
+        "muted",
+        tr("Дампы Eeprom.bin и Opbt.bin ещё не прочитаны (режим только чтение).", "Eeprom.bin and Opbt.bin are not loaded yet (read-only)."),
+        known=False,
+        key="unknown",
+    )

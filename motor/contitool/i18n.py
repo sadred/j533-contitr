@@ -12,7 +12,7 @@ _LISTENERS: list[Callable[[str], None] | weakref.WeakMethod] = []
 
 
 def normalize_lang_code(raw: str | None) -> str | None:
-    """Normalize arbitrary language code strings into 'ru', 'en' or 'tr'."""
+    """Normalize arbitrary language code strings into 'ru' or 'en'."""
     if raw is None:
         return None
     val = raw.strip().lower()
@@ -63,7 +63,7 @@ def get_lang() -> str:
 
 
 def tr(ru: str, en: str) -> str:
-    """Return the string in the active language (ru / en / tr)."""
+    """Return Russian or English string depending on active language."""
     if _LANG == "tr":
         from contitool.i18n_tr import TR_CATALOG
 

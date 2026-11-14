@@ -9,6 +9,15 @@ from functools import reduce
 import hashlib
 import struct
 
+from contitool.can.hw_applets import (
+    EEPROM_M95640_READER_STUB,
+    EXPECTED_EEPROM_READER_STUB_SHA256,
+    EXPECTED_OPBT_READER_STUB_SHA256,
+    OPBT_READER_STUB,
+    build_m95640_reader_payload,
+    build_opbt_reader_payload,
+)
+
 from contitool.i18n import tr
 
 LOADER_SYNC = b"\x84\x00\x00\x00\x00"
@@ -258,15 +267,36 @@ def build_uflash_one_shot_payload(uflash_32k: bytes) -> tuple[bytes, int]:
     return payload, pages
 
 
-def dflash_active_word_count(block_64b: bytes) -> int:
+# The ZDC passport and datasets (DataFlash 0x0000..0x303F) are not read through R_FDL: the gateway copies them to
+# RAM with a plain CPU read (firmware 5366 copy loop 0x0007EE04) and checks their CRC there. An erased cell reads
+# back as noise, not 0xFF, so every word of a data-bearing block there must be programmed — 0xFFFFFFFF included.
+# Seen on the bench 2026-11-09: a FPA dataset written with its trailing FF word left blank read 2 noise bytes, the
+# CRC failed in the gateway and it reported ZDC #4 invalid (DTC 000401), while the blank-check readback "matched".
+DFLASH_MEMCPY_END = 0x3040
+
+
+def dflash_active_word_count(block_64b: bytes, offset: int | None = None) -> int:
     """Return number of 4-byte words (0..16) to program after erasing a 64-byte DataFlash block.
 
     Preserves valid hardware ECC over active records (including interior 0xFFFFFFFF words) while
-    leaving trailing 0xFF padding genuinely blank (BCST == 0) as required by R_FDL / Fls_Read.
+    leaving trailing 0xFF padding genuinely blank (BCST == 0) as required by R_FDL / Fls_Read — except in the ZDC
+    area (`offset` < DFLASH_MEMCPY_END), read by plain memcpy, where a block holding data is programmed whole.
     """
     if len(block_64b) != DFLASH_BLOCK_SIZE:
         raise ValueError(f"Expected 64-byte DataFlash block, got {len(block_64b)}")
+    if dflash_needs_full_program(block_64b, offset):
+        return DFLASH_BLOCK_SIZE // 4
     return (len(block_64b.rstrip(b"\xff")) + 3) // 4
+
+
+def dflash_needs_full_program(block_64b: bytes, offset: int | None) -> bool:
+    """A data-bearing block of the memcpy-read ZDC area whose trailing 0xFF words an R_FDL-style write leaves blank."""
+    return (
+        offset is not None
+        and offset < DFLASH_MEMCPY_END
+        and block_64b != b"\xff" * DFLASH_BLOCK_SIZE
+        and block_64b.endswith(b"\xff\xff\xff\xff")
+    )
 
 
 def _normalize_flid(flid_16b: bytes | None) -> bytes:
@@ -304,7 +334,7 @@ def build_dflash_faci_payloads(
         if offset in seen_offsets:
             raise ValueError(f"Duplicate DataFlash block offset 0x{offset:04X}")
         seen_offsets.add(offset)
-        words = dflash_active_word_count(block_data)
+        words = dflash_active_word_count(block_data, offset)
         normalized.append((offset, words, bytes(block_data)))
 
     payloads: list[bytes] = []
@@ -428,12 +458,40 @@ def build_uflash_faci_payloads(
     return [one_shot], count
 
 
+# The staged request is a multi-DID read whose answer must measure exactly STAGE1_TOTAL bytes and end in 04 10 05.
+# The three crafted DIDs carry the descriptor address 0x0100120E in their DID numbers; the ECU does not support
+# them and leaves them out of the answer, so the repeats of F17C and F15B are padding that places the write.
+# Every length involved is a constant in the firmware — the bootloader's F15B handler copies two 10-byte NvM
+# records in a loop that always runs twice — so the layout of this answer is the same on every gateway.
+#
+# Both staged answers overrun the bootloader's response buffer (0xFEDE0B18, cleared with memset(.., 0, 0x14A), so
+# 330 bytes) onto the request dispatcher's state block that follows it:
+#   stage 1, 338 bytes: resp[330..337] -> 0xFEDE0C62..69, ending 04 10 05 (0410 last, value from 2E 0410 05)
+#   stage 2, 337 bytes: resp[330..336] -> 0xFEDE0C62..68, ending 04 10 48
+# Stage 2 rewrites all of it but 0C69, so stage 1 is there for its overrun (0C69 = 05), not for its answer.
+# 0C62 is the suppress-positive-response flag: stage 2 lands FAZIT digits on it and is never answered, and the
+# trigger works all the same. Stage 1 lands bytes 5..9 of the last F15B record on 0C62..0C66: tester serial
+# bytes 2..5 of the last `2E F15A` and a status byte. Every stage-1 answer logged so far had zero on 0C62 and
+# 0C64; the serial 01 02 03 04 05 06 that ContiTool wrote up to 2.0.1d puts 03 / 05 there and silences it.
+STAGE1_TOTAL = 338
+KNOWN_DID_LENGTHS: dict[int, int] = {0xF17C: 23, 0xF1A2: 6, 0xF15B: 20, 0x0410: 1}
+STAGE1_KNOWN = [0xF17C] * 6 + [0xF1A2, 0xF15B]
+STAGE1_KNOWN_TAIL = [0xF15B] * 7 + [0x0410]
+STAGE1_OVERRUN = 330  # resp[330:] is what landed on 0xFEDE0C62..69
+# Tester serial for `2E F15A` (date + these 6 bytes). Its bytes 2..5 land on 0C62..0C65 in stage 1 (see above):
+# all zero, as on the factory record of a gateway that answered. `2E F15A` itself only fills a RAM buffer
+# (0xFEDE0AF8, handler 0x0100440E); the bootloader stores it into a block's F15B record only while erasing that
+# block (31 01 FF 00, 0x0100323E), so a bad record on the application block goes away with the next app write.
+FBL_TESTER_SERIAL = bytes(6)
+
+
+def _did_req(entries: list[int]) -> bytes:
+    return bytes([0x22]) + b"".join(did.to_bytes(2, "big") for did in entries)
+
+
 def build_service_loader_uds_steps() -> tuple[bytes, bytes, bytes]:
     """Return (stage1_did_req, stage2_did_req, sa_trigger_req) as pure ISO 14229 UDS frames."""
-    def _did_req(entries: list[int]) -> bytes:
-        return bytes([0x22]) + b"".join(did.to_bytes(2, "big") for did in entries)
-
-    stage1 = [0xF17C] * 6 + [0xF1A2, 0xF15B] + list(UNKNOWN_DIDS) + [0xF15B] * 7 + [0x0410]
+    stage1 = [*STAGE1_KNOWN, *UNKNOWN_DIDS, *STAGE1_KNOWN_TAIL]
     stage2 = [0xF15B] * 8 + list(UNKNOWN_DIDS) + [0xF15B] * 6 + [0xF17C, 0x0410]
     trigger = bytes.fromhex("2712deadbeef0000000000000000000000000e120001")
     return _did_req(stage1), _did_req(stage2), trigger
@@ -471,6 +529,17 @@ def verify_payload_self_tests() -> None:
         raise RuntimeError("Embedded DFLASH_READER_STUB SHA-256 self-test failed")
     if build_fed_reader_payload(0x11223344, 0x1000, 2) != _FED_READER_ASSEMBLED_2X:
         raise RuntimeError("Fed reader builder differs from its assembled template")
+    from contitool.can.hw_applets import (
+        EEPROM_M95640_READER_STUB,
+        EXPECTED_EEPROM_READER_STUB_SHA256,
+        EXPECTED_OPBT_READER_STUB_SHA256,
+        OPBT_READER_STUB,
+    )
+
+    if hashlib.sha256(OPBT_READER_STUB).hexdigest() != EXPECTED_OPBT_READER_STUB_SHA256:
+        raise RuntimeError("Embedded OPBT_READER_STUB SHA-256 self-test failed")
+    if hashlib.sha256(EEPROM_M95640_READER_STUB).hexdigest() != EXPECTED_EEPROM_READER_STUB_SHA256:
+        raise RuntimeError("Embedded EEPROM_M95640_READER_STUB SHA-256 self-test failed")
     sa2_vectors = {
         0x00000001: 0x7DAD27A0,
         0x12345678: 0x7CA16271,

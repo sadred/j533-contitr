@@ -7,11 +7,12 @@ from pathlib import Path
 import time
 from typing import Any
 
-from PySide6.QtCore import QObject, QSettings, Qt, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QFileDialog,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -22,15 +23,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from contitool.can import SUPPORTED_CAN_INTERFACES, FoundAdapter, can_identify, discover_adapters
+from contitool.can import SUPPORTED_CAN_INTERFACES, FoundAdapter, can_identify, discover_adapters, unsupported_ecu_reason
 from contitool.can import dpdu
-from contitool.core import clean_user_path
 from contitool.gui.theme import set_tone
 from contitool.gui.widgets.page import Dialog, button, group_label, hint, row, run_dialog
 from contitool.gui.widgets.pinout_card import PinoutCard
 from contitool.gui.worker import OperationWorker
 from contitool.i18n import tr
 from contitool.report import Failure
+from contitool.storage import runs_root
 
 
 BUILTIN_TERMINATION = ("dpdu", "j2534")  # VAS 6154 / VNCI and J2534 pass-thru adapters terminate CAN themselves
@@ -47,7 +48,7 @@ class CanConnection(QObject):
         self.interface = str(s.value("can/interface", "slcan"))
         self.port = str(s.value("can/port", ""))
         self.title = str(s.value("can/title", ""))
-        self.out_dir = Path(str(s.value("can/out_dir", Path.cwd() / "contitool_runs")))
+        self.out_dir = runs_root()  # always next to the program (storage.py); no longer a setting
         self.wiring_confirmed = False  # asked again every session on purpose
         self.in_use: Callable[[], str] = lambda: ""  # set by the main window: why the adapter is taken right now
 
@@ -64,13 +65,14 @@ class CanConnection(QObject):
         )
 
     def update(self, interface: str, port: str, out_dir: Path, wiring_confirmed: bool, title: str = "") -> None:
+        if (interface, port) != (self.interface, self.port):
+            dpdu.close_session()  # a D-PDU link kept open belongs to the adapter that was picked before
         self.interface, self.port, self.out_dir, self.wiring_confirmed = interface, port, out_dir, wiring_confirmed
         self.title = title
         s = QSettings()
         s.setValue("can/interface", interface)
         s.setValue("can/port", port)
         s.setValue("can/title", title)
-        s.setValue("can/out_dir", str(out_dir))
         self.changed.emit()
 
     def adapter_name(self) -> str:
@@ -80,11 +82,11 @@ class CanConnection(QObject):
         return self.interface
 
     def display(self) -> str:
-        """Short label for the header chip: "CANable2 · cu.usbmodem…", "VAS6154A"."""
+        """Short label for the header button: "CANable2 (cu.usbmodem…)", "VAS6154A"."""
         port = self.port.replace("\\", "/").rsplit("/", 1)[-1]
         if self.title:
-            return self.title if self.title == self.port else f"{self.title} · {port}"
-        return f"{self.adapter_name()} · {port}" if port else self.adapter_name()
+            return self.title if self.title == self.port else f"{self.title} ({port})"
+        return f"{self.adapter_name()} ({port})" if port else self.adapter_name()
 
 
 _ORPHANS: set[OperationWorker] = set()  # threads of closed dialogs, kept alive until they end
@@ -104,10 +106,75 @@ def _let_finish(worker: OperationWorker | None) -> None:
     worker.finished.connect(lambda w=worker: (_ORPHANS.discard(w), w.deleteLater()))
 
 
+DIALOG_SIZE = (720, 760)  # the dialog keeps it; texts come and go with the adapter, the body scrolls
+
+
 def _link(text: str, slot: Any) -> Any:
     b = button(text, "LinkBtn", slot=slot)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     return b
+
+
+class _ClickLabel(QLabel):
+    clicked = Signal()
+
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class WrapCheckBox(QWidget):
+    """A checkbox whose text wraps to the dialog's width (a QCheckBox never wraps and widens the whole dialog);
+    clicking the text toggles it, as with a plain checkbox."""
+
+    toggled = Signal(bool)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.box = QCheckBox()
+        self.label = _ClickLabel()
+        self.label.setWordWrap(True)
+        self.label.clicked.connect(lambda: self.box.isEnabled() and self.box.toggle())
+        self.box.toggled.connect(self.toggled.emit)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.box, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self.label, 1)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - QCheckBox API
+        self.label.setText(text)
+
+    def text(self) -> str:
+        return self.label.text()
+
+    def setChecked(self, on: bool) -> None:  # noqa: N802 - QCheckBox API
+        self.box.setChecked(on)
+
+    def isChecked(self) -> bool:  # noqa: N802 - QCheckBox API
+        return self.box.isChecked()
+
+
+class PathLabel(QLabel):
+    """A long folder path shortened in the middle to the width it gets (the full one is in the tooltip), so it never
+    widens the dialog."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_path(self, path: str) -> None:
+        self._full = path
+        self.setToolTip(path)
+        self._elide()
+
+    def resizeEvent(self, event: Any) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, max(60, self.width())))
 
 
 class ConnectionDialog(Dialog):
@@ -121,7 +188,7 @@ class ConnectionDialog(Dialog):
                 "Шлюз на стенде подключается к адаптеру по шине Diagnosis CAN (500 кбит/с) через разъём T20.",
                 "The bench gateway talks to the adapter over Diagnosis CAN (500 kbit/s) via the T20 connector.",
             ),
-            width=620,
+            width=DIALOG_SIZE[0],
         )
         self.conn = conn
         self._check: OperationWorker | None = None
@@ -161,42 +228,58 @@ class ConnectionDialog(Dialog):
         self._check_failure: Failure | None = None
         self.body.addLayout(row(self.btn_check, self.lbl_check, 0, self.btn_report))
 
-        self.chk_120ohm = QCheckBox()
+        self.chk_120ohm = WrapCheckBox()
         self._term_confirmed = conn.wiring_confirmed  # what the user ticked for an adapter without its own terminator
         self.chk_120ohm.setChecked(conn.wiring_confirmed)
         self.chk_120ohm.toggled.connect(self._term_toggled)
         self.body.addWidget(self.chk_120ohm)
         self.lbl_term_help = hint(tr(
-            "Что это: на обоих концах шины CAN должно стоять по резистору 120 Ом — они гасят отражения сигнала, без "
-            "них кадры искажаются и теряются. На столе шина состоит только из шлюза и адаптера, и согласования может не "
-            "хватать: включите терминатор в адаптере (если он есть — обычно это перемычка или переключатель) или "
-            "поставьте резистор 120 Ом между CAN-H и CAN-L.<br><b>Галочка — только напоминание: ContiTool сам ничего не "
-            "проверяет и не измеряет.</b>",
-            "What this is: each end of a CAN bus needs a 120 Ω resistor — it stops signal reflections; without them frames "
-            "get corrupted and lost. On the bench the bus is just the gateway and the adapter, and that may not be "
-            "terminated enough: switch on the adapter's terminator (if it has one — usually a jumper or a switch) or fit a "
-            "120 Ω resistor between CAN-H and CAN-L.<br><b>The checkbox is only a reminder: ContiTool checks and measures "
-            "nothing itself.</b>",
+            "На каждом конце шины CAN нужен резистор 120 Ом: без него сигнал отражается и кадры теряются. На "
+            "столе шина состоит только из шлюза и адаптера, поэтому включите терминатор в адаптере (обычно "
+            "это перемычка или переключатель) или поставьте резистор 120 Ом между CAN-H и "
+            "CAN-L.<br><b>Галочка — только напоминание: ContiTool ничего не измеряет.</b>",
+            "Each end of a CAN bus needs a 120 Ω resistor: without it the signal reflects and frames get "
+            "lost. On the bench the bus is just the gateway and the adapter, so switch on the adapter's "
+            "terminator (usually a jumper or a switch) or fit a 120 Ω resistor between CAN-H and "
+            "CAN-L.<br><b>The checkbox is only a reminder: ContiTool measures nothing.</b>",
         ))
         self.body.addWidget(self.lbl_term_help)
-        self.chk_driver = QCheckBox()  # a D-PDU driver version ContiTool was not checked with
+        self.chk_driver = WrapCheckBox()  # a D-PDU driver version ContiTool was not checked with
         self.chk_driver.toggled.connect(lambda *_a: self._sync())
         self.body.addWidget(self.chk_driver)
+        self.lbl_vnci = hint(tr(
+            "<b>Драйвер перепрошьёт адаптер под свою версию.</b> При подключении драйвер D-PDU сам записывает в "
+            "VAS 6154 / VNCI прошивку своей версии (около 30 секунд); не отключайте адаптер до конца. Это безопасно: "
+            "ODIS при следующем подключении так же запишет в адаптер свою версию.<br>"
+            "<b>Закройте ODIS и VCTool.</b> Пока работает ContiTool, они должны быть закрыты.",
+            "<b>The driver reflashes the adapter to its own version.</b> On connect the D-PDU driver itself writes "
+            "firmware of its version into the VAS 6154 / VNCI (about 30 seconds); do not unplug the adapter until it "
+            "finishes. This is safe: ODIS writes its own version back into the adapter the next time it connects.<br>"
+            "<b>Close ODIS and VCTool.</b> They must stay closed while ContiTool is working.",
+        ))
+        self.body.addWidget(self.lbl_vnci)
         self.btn_pinout = _link("", self._toggle_pinout)
         self.body.addLayout(row(self.btn_pinout))
-        self.pinout_card = PinoutCard()
+        self.pinout_card = PinoutCard(stacked=True)
         self.pinout_card.setVisible(False)
         self.body.addWidget(self.pinout_card)
 
         self.out_dir = conn.out_dir
-        self.lbl_outdir = QLabel()
-        self.lbl_outdir.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.body.addLayout(row(hint(tr("Папка для бэкапов:", "Backup folder:")), self.lbl_outdir, 1,
-                                button(tr("Изменить…", "Change…"), "GhostBtn", slot=self._browse_outdir)))
+        self.lbl_outdir = PathLabel()
+        self.lbl_outdir.setObjectName("Hint")
+        self.body.addWidget(group_label(tr("Папка с дампами и сессиями", "Dumps and sessions folder")))
+        out_row = row(self.lbl_outdir, button(tr("Открыть", "Open"), "GhostBtn", slot=self._open_outdir), 0)
+        out_row.setStretchFactor(self.lbl_outdir, 1)
+        self.body.addLayout(out_row)
+        self.body.addStretch(1)  # the dialog keeps its size: spare room goes below, not between the rows
         self._show_outdir()
 
         self.btn_ok = button(tr("Готово", "Done"), "PrimaryBtn", slot=self._save)
         self.finish(ok=self.btn_ok)
+        # One size that holds the opened wiring diagram: what is taller scrolls, nothing is ever wider.
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.resize(*DIALOG_SIZE)
+        self._fit_screen()
 
         self._toggle_pinout(False)
         self._toggle_manual(self._manual_open)
@@ -266,10 +349,13 @@ class ConnectionDialog(Dialog):
 
     def selection(self) -> tuple[str, str, str]:
         """(interface, port, title) — manual entry wins while it is open and filled in."""
-        if self._manual_open and (self.ed_port.text().strip() or self.cmb_iface.currentData() in ("j2534", "dpdu")):
+        if self._manual_wins():
             return str(self.cmb_iface.currentData()), self.ed_port.text().strip(), ""
         a = self._adapter(self.list.currentItem())
         return (a.interface, a.channel, a.title) if a else ("", "", "")
+
+    def _manual_wins(self) -> bool:
+        return self._manual_open and bool(self.ed_port.text().strip() or self.cmb_iface.currentData() in ("j2534", "dpdu"))
 
     def _toggle_manual(self, show: bool | None = None) -> None:
         show = not self._manual_open if show is None else show
@@ -282,11 +368,10 @@ class ConnectionDialog(Dialog):
         show = self.pinout_card.isHidden() if show is None else show
         self.pinout_card.setVisible(show)
         self.btn_pinout.setText(tr("Схема подключения T20 ", "T20 wiring diagram ") + ("▾" if show else "▸"))
-        self.adjustSize()
 
     def _unverified_driver(self) -> str | None:
         """Version of the picked D-PDU driver when it needs the user's go-ahead, else None."""
-        a = None if self._manual_open else self._adapter(self.list.currentItem())
+        a = None if self._manual_wins() else self._adapter(self.list.currentItem())  # the one selection() uses
         if a is None or a.interface != "dpdu" or dpdu.driver_supported(a.driver):
             return None
         return a.driver
@@ -311,20 +396,35 @@ class ConnectionDialog(Dialog):
         iface, port, _title = self.selection()
         builtin = iface in BUILTIN_TERMINATION  # VAS 6154 / VNCI and J2534 terminate the bus themselves: nothing to ask
         self.chk_120ohm.setText(tr(
-            "Включён CAN-терминатор (в адаптере или резистор 120 Ом между Pin 19 CAN-H и Pin 9 CAN-L), питание +12 В стабильно",
-            "CAN termination is on (in the adapter or a 120 Ω resistor between Pin 19 CAN-H and Pin 9 CAN-L), +12 V supply is stable",
+            "Терминатор CAN включён (в адаптере или резистор 120 Ом между Pin 19 CAN-H и Pin 9 CAN-L), "
+            "питание +12 В стабильное",
+            "CAN termination is on (in the adapter or a 120 Ω resistor between Pin 19 CAN-H and Pin 9 CAN-L),"
+            " +12 V supply is stable",
         ))
         self.chk_120ohm.setVisible(not builtin)
         self.lbl_term_help.setVisible(not builtin)
         self.chk_120ohm.blockSignals(True)
         self.chk_120ohm.setChecked(builtin or self._term_confirmed)
         self.chk_120ohm.blockSignals(False)
+        self.lbl_vnci.setVisible(iface == "dpdu")  # only a D-PDU driver reflashes its adapter and shares it with ODIS
         drv = self._unverified_driver()
         self.chk_driver.setVisible(drv is not None)
-        self.chk_driver.setText(tr(
-            f"Разрешить непроверенный драйвер D-PDU {drv or '?'} — при подключении он перепрошьёт VCI под себя",
-            f"Allow unverified D-PDU driver {drv or '?'} — on connect it reflashes the VCI to its own version",
-        ))
+        if dpdu.driver_unstable(drv or ""):
+            self.chk_driver.setText(tr(
+                f"Всё равно работать на драйвере D-PDU {drv}. На версиях 30 и новее работа сейчас нестабильна: "
+                "адаптер зависает посреди прошивки по UDS. Надёжнее выбрать в списке драйвер 27.2 — он идёт вместе "
+                "с ContiTool",
+                f"Use D-PDU driver {drv} anyway. On versions 30 and newer work is unstable at the moment: the "
+                "adapter hangs partway through a UDS flash. The reliable choice is driver 27.2 in the list — it "
+                "comes with ContiTool",
+            ))
+        else:
+            self.chk_driver.setText(tr(
+                f"Разрешить непроверенный драйвер D-PDU {drv or '?'}: при подключении он перепрошьёт VCI под свою "
+                "версию",
+                f"Allow the unverified D-PDU driver {drv or '?'}: on connect it reflashes the VCI to its own "
+                "version",
+            ))
         self.chk_driver.setToolTip(tr(f"Проверены: {', '.join(dpdu.SUPPORTED_DRIVERS)}",
                                       f"Verified: {', '.join(dpdu.SUPPORTED_DRIVERS)}"))
         driver_ok = drv is None or self.chk_driver.isChecked()
@@ -339,7 +439,6 @@ class ConnectionDialog(Dialog):
             "" if ok else tr("Выберите адаптер и подтвердите, что CAN-терминатор включён (и драйвер D-PDU, если спрошено)",
                              "Pick an adapter and confirm the CAN terminator is on (and the D-PDU driver, if asked)")
         )
-        self.fit_height()  # the terminator / driver texts come and go with the adapter
 
     # ---------------------------------------------------------------- link check
     def _check_link(self) -> None:
@@ -368,7 +467,20 @@ class ConnectionDialog(Dialog):
 
     def _check_ok(self, res: dict[str, Any]) -> None:
         values = {i["did"]: i["value"] for i in res.get("ident", [])}
-        found = " · ".join(filter(None, (values.get("F187"), values.get("F197"), values.get("F189") and f"SW {values['F189']}")))
+        found = ", ".join(filter(None, (values.get("F187"), values.get("F197"), values.get("F189") and f"SW {values['F189']}")))
+        unsupported = res.get("unsupported") or unsupported_ecu_reason(res.get("ident", []))
+        if unsupported:
+            msg = "⚠ " + tr("Блок отвечает, но не поддерживается", "ECU answers, but is not supported")
+            self._check_done(msg + (f": {found}" if found else "") + f" — {unsupported}", "warn")
+            return
+        if res.get("adapter_warning"):
+            msg = "⚠ " + tr("Блок отвечает", "ECU answers") + (f": {found}" if found else "")
+            self._check_done(f"{msg}\n{res['adapter_warning']}", "warn")
+            return
+        if res.get("in_fbl"):
+            msg = "✓ " + tr("Блок отвечает (в режиме загрузчика FBL)", "ECU answers (in FBL bootloader mode)")
+            self._check_done(msg + (f": {found}" if found else ""), "warn")
+            return
         self._check_done("✓ " + tr("Блок отвечает", "ECU answers") + (f": {found}" if found else ""), "ok")
 
     def _check_done(self, text: str, tone: str) -> None:
@@ -388,14 +500,11 @@ class ConnectionDialog(Dialog):
 
     # ---------------------------------------------------------------- folder & save
     def _show_outdir(self) -> None:
-        self.lbl_outdir.setText(str(self.out_dir))
-        self.lbl_outdir.setToolTip(str(self.out_dir))
+        self.lbl_outdir.set_path(str(self.out_dir))
 
-    def _browse_outdir(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, tr("Папка для бэкапов", "Backup folder"), str(self.out_dir))
-        if chosen:
-            self.out_dir = clean_user_path(chosen)
-            self._show_outdir()
+    def _open_outdir(self) -> None:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.out_dir)))
 
     def _save(self) -> None:
         iface, port, title = self.selection()
