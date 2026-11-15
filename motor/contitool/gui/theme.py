@@ -621,6 +621,7 @@ def build_stylesheet() -> str:
     }}
     QPushButton#SegBtn[pos="left"] {{ border-top-left-radius: 5px; border-bottom-left-radius: 5px; border-right: none; }}
     QPushButton#SegBtn[pos="right"] {{ border-top-right-radius: 5px; border-bottom-right-radius: 5px; }}
+    QPushButton#SegBtn[pos="mid"] {{ border-left: none; border-right: none; }}
 
     /* ── Inputs ── */
     QLineEdit, QComboBox, QSpinBox {{

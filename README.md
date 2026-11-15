@@ -9,14 +9,17 @@ Continental VAG MQB **J533 Gateway** (`3Q0 907 530`, Renesas RH850/F1L) için
 
 ## Sadakat garantisi
 
-Motor, orijinal v2.1.1 ile **bayt bayt aynıdır**. Yerelleştirme için yalnız **3 dosyaya**
+Motor, orijinal v2.1.1 ile **bayt bayt aynıdır**. Yerelleştirme için yalnız **4 dosyaya**
 dokunuldu ve her fark otomatik denetlenir (`_fidelity.py`):
 
 ```
-değişen dosya: 3 → cli/main.py · gui/main_window.py · i18n.py
+değişen dosya: 4 → i18n.py · cli/main.py · gui/main_window.py · gui/theme.py
 eklenen dosya: 1 → i18n_tr.py (Türkçe metin kataloğu)
 sonuç: rc=0 — izin verilmeyen tek bir satır farkı yok
 ```
+
+Dil düğmesi **RU | TR | EN** (orijinalde RU/EN vardı; TR eklendi).
+Upstream'in kendi test paketi (29 dosya) düzeltilmiş motorda **36/36** geçiyor (gui yerelleştirme testleri dahil).
 
 Yani **protokol, adres, yazma akışı, CRC/RSA mantığı orijinalin aynısı**; yalnızca
 görünen metinler Türkçe. Bu yüzden "yanlış analiz → parçayı bozma" riski yerelleştirme
