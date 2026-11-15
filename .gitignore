@@ -6,3 +6,5 @@ dist*/
 *.bin
 *.fsc
 *.json
+
+run_log.txt
